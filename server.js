@@ -55,86 +55,140 @@ async function assignSlot(eventDate) {
   return null;
 }
 
+// ─── content 파싱 ──────────────────────────────────────────
+
+function parseContent(content) {
+  const year = new Date().getFullYear();
+  const tokens = content.trim().split(/\s+/);
+  const dates = [];
+  const names = [];
+
+  for (const token of tokens) {
+    let date = null;
+
+    // YYYY-MM-DD
+    if (/^\d{4}-\d{2}-\d{2}$/.test(token)) {
+      date = token;
+    }
+    // M/DD, MM/DD, M-DD, MM-DD, M.DD, MM.DD
+    else if (/^\d{1,2}[\/\-\.]\d{1,2}$/.test(token)) {
+      const [m, d] = token.split(/[\/\-\.]/).map(Number);
+      date = `${year}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    }
+    // MMDD (4자리) 또는 MDD (3자리)
+    else if (/^\d{3,4}$/.test(token)) {
+      const s = token.padStart(4, '0');
+      date = `${year}-${s.slice(0, 2)}-${s.slice(2, 4)}`;
+    }
+
+    if (date) {
+      dates.push(date);
+    } else {
+      names.push(token);
+    }
+  }
+
+  return { names, dates };
+}
+
 // ─── API ───────────────────────────────────────────────────
 
 /**
  * POST /payment
  * Tasker → 서버로 입금 알림 전송
  *
- * Body: { "date": "2026-04-16", "name": "홍길동", "amount": 1500 }
+ * Body: { "content": "홍길동 김철수 0416", "amount": 3000 }
+ * content: 이름(들) + 날짜(들) 혼합. 날짜 패턴(숫자)은 자동 감지.
  */
 app.post('/payment', async (req, res) => {
-  const { date, name, amount } = req.body;
+  const { content, amount } = req.body;
 
-  if (!date || !name || amount === undefined) {
+  if (!content || amount === undefined) {
     return res.status(400).json({
       success: false,
-      message: 'date, name, amount 필드가 모두 필요합니다.',
+      message: 'content, amount 필드가 모두 필요합니다.',
     });
   }
 
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    return res.status(400).json({
-      success: false,
-      message: 'date 형식은 YYYY-MM-DD 이어야 합니다.',
-    });
+  const { names, dates } = parseContent(String(content));
+
+  if (names.length === 0) {
+    return res.status(400).json({ success: false, message: 'content에서 이름을 찾을 수 없습니다.' });
+  }
+  if (dates.length === 0) {
+    return res.status(400).json({ success: false, message: 'content에서 날짜를 찾을 수 없습니다. (예: 홍길동 0416)' });
   }
 
-  const bungType = getBungType(date);
-  if (!bungType) {
-    return res.status(400).json({
-      success: false,
-      message: `${date}은 벙 개설 요일(목요일/일요일)이 아닙니다.`,
-    });
+  // 날짜별 벙 타입 검증 및 총 예상 금액 계산
+  let totalExpected = 0;
+  for (const date of dates) {
+    const bungType = getBungType(date);
+    if (!bungType) {
+      return res.status(400).json({
+        success: false,
+        message: `${date}은 벙 개설 요일(목요일/일요일)이 아닙니다.`,
+      });
+    }
+    totalExpected += getExpectedAmount(bungType) * names.length;
   }
 
-  const expected = getExpectedAmount(bungType);
-  if (Number(amount) !== expected) {
+  if (Number(amount) !== totalExpected) {
     return res.status(400).json({
       success: false,
-      message: `금액 불일치. ${getBungTypeLabel(bungType)} 벙 참가비는 ${expected}원입니다. (받은 금액: ${amount}원)`,
+      message: `금액 불일치. 예상 금액: ${totalExpected}원 (${names.length}명 × ${dates.length}개 날짜). 받은 금액: ${amount}원`,
     });
   }
 
   try {
-    // 중복 등록 확인
-    const { data: existing, error: selectError } = await supabase
-      .from('attendees')
-      .select('time_slot')
-      .eq('event_date', date)
-      .eq('name', String(name).trim())
-      .maybeSingle();
+    const results = [];
 
-    if (selectError) throw selectError;
+    for (const date of dates) {
+      const perPersonAmount = getExpectedAmount(getBungType(date));
 
-    if (existing) {
-      return res.status(409).json({
-        success: false,
-        message: `${name}님은 이미 ${date} 벙 ${existing.time_slot} 타임에 등록되어 있습니다.`,
-        data: { date, name, time_slot: existing.time_slot },
-      });
+      for (const name of names) {
+        // 중복 확인
+        const { data: existing, error: selectError } = await supabase
+          .from('attendees')
+          .select('time_slot')
+          .eq('event_date', date)
+          .eq('name', name)
+          .maybeSingle();
+
+        if (selectError) throw selectError;
+
+        if (existing) {
+          results.push({ name, date, status: 'duplicate', time_slot: existing.time_slot });
+          continue;
+        }
+
+        // 슬롯 배정
+        const slot = await assignSlot(date);
+        if (!slot) {
+          results.push({ name, date, status: 'full' });
+          continue;
+        }
+
+        const { error: insertError } = await supabase
+          .from('attendees')
+          .insert({ event_date: date, time_slot: slot, name, amount: perPersonAmount });
+
+        if (insertError) throw insertError;
+
+        results.push({ name, date, status: 'ok', time_slot: slot });
+      }
     }
 
-    // 슬롯 배정
-    const slot = await assignSlot(date);
-    if (!slot) {
-      return res.status(409).json({
-        success: false,
-        message: `${date} 벙이 모든 타임 만석입니다. (10:30 / 12:00 각 ${SLOT_CAPACITY}명)`,
-      });
-    }
+    const ok       = results.filter((r) => r.status === 'ok');
+    const dup      = results.filter((r) => r.status === 'duplicate');
+    const full     = results.filter((r) => r.status === 'full');
 
-    const { error: insertError } = await supabase
-      .from('attendees')
-      .insert({ event_date: date, time_slot: slot, name: String(name).trim(), amount: Number(amount) });
+    const messages = [];
+    ok.forEach((r)   => messages.push(`✅ ${r.name} ${r.date} ${r.time_slot} 등록 완료`));
+    dup.forEach((r)  => messages.push(`⚠️ ${r.name} ${r.date} 이미 등록됨 (${r.time_slot})`));
+    full.forEach((r) => messages.push(`❌ ${r.name} ${r.date} 만석`));
 
-    if (insertError) throw insertError;
-
-    return res.status(201).json({
-      success: true,
-      message: `${name}님 ${date} ${slot} 타임 벙 등록 완료!`,
-      data: { date, name, time_slot: slot, amount: Number(amount) },
-    });
+    const statusCode = ok.length > 0 ? 201 : 409;
+    return res.status(statusCode).json({ success: ok.length > 0, message: messages.join('\n'), results });
   } catch (err) {
     console.error('POST /payment 오류:', err.message);
     return res.status(500).json({ success: false, message: '서버 오류가 발생했습니다.' });
