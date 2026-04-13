@@ -10,7 +10,7 @@ const SLOT_CAPACITY = parseInt(process.env.SLOT_CAPACITY || '10');
 // ─── DB 초기화 ──────────────────────────────────────────────
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }, // Supabase SSL 필수
+  ssl: process.env.DB_SSL === 'false' ? false : { rejectUnauthorized: false },
 });
 
 async function initDB() {
