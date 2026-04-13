@@ -1,6 +1,6 @@
 require('dotenv').config();
 const express = require('express');
-const { Pool } = require('pg');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 app.use(express.json());
@@ -8,26 +8,11 @@ app.use(express.json());
 const PORT = parseInt(process.env.PORT || '3000');
 const SLOT_CAPACITY = parseInt(process.env.SLOT_CAPACITY || '10');
 
-// ─── DB 초기화 ──────────────────────────────────────────────
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DB_SSL === 'false' ? false : { rejectUnauthorized: false },
-});
-
-async function initDB() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS attendees (
-      id            SERIAL PRIMARY KEY,
-      event_date    DATE        NOT NULL,
-      time_slot     VARCHAR(5)  NOT NULL,
-      name          TEXT        NOT NULL,
-      amount        INTEGER     NOT NULL,
-      registered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      UNIQUE(event_date, name)
-    )
-  `);
-  console.log('DB 테이블 준비 완료');
-}
+// ─── Supabase 클라이언트 ────────────────────────────────────
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY
+);
 
 // ─── 헬퍼 함수 ─────────────────────────────────────────────
 
@@ -53,16 +38,17 @@ function getBungTypeLabel(bungType) {
 }
 
 async function assignSlot(eventDate) {
-  const { rows } = await pool.query(
-    `SELECT time_slot, COUNT(*) AS cnt
-     FROM attendees
-     WHERE event_date = $1
-     GROUP BY time_slot`,
-    [eventDate]
-  );
+  const { data, error } = await supabase
+    .from('attendees')
+    .select('time_slot')
+    .eq('event_date', eventDate);
+
+  if (error) throw error;
 
   const filled = {};
-  for (const row of rows) filled[row.time_slot] = parseInt(row.cnt);
+  for (const row of data) {
+    filled[row.time_slot] = (filled[row.time_slot] || 0) + 1;
+  }
 
   if ((filled['10:30'] || 0) < SLOT_CAPACITY) return '10:30';
   if ((filled['12:00'] || 0) < SLOT_CAPACITY) return '12:00';
@@ -112,16 +98,20 @@ app.post('/payment', async (req, res) => {
 
   try {
     // 중복 등록 확인
-    const { rows: existing } = await pool.query(
-      'SELECT time_slot FROM attendees WHERE event_date = $1 AND name = $2',
-      [date, name]
-    );
+    const { data: existing, error: selectError } = await supabase
+      .from('attendees')
+      .select('time_slot')
+      .eq('event_date', date)
+      .eq('name', String(name).trim())
+      .maybeSingle();
 
-    if (existing.length > 0) {
+    if (selectError) throw selectError;
+
+    if (existing) {
       return res.status(409).json({
         success: false,
-        message: `${name}님은 이미 ${date} 벙 ${existing[0].time_slot} 타임에 등록되어 있습니다.`,
-        data: { date, name, time_slot: existing[0].time_slot },
+        message: `${name}님은 이미 ${date} 벙 ${existing.time_slot} 타임에 등록되어 있습니다.`,
+        data: { date, name, time_slot: existing.time_slot },
       });
     }
 
@@ -134,10 +124,11 @@ app.post('/payment', async (req, res) => {
       });
     }
 
-    await pool.query(
-      'INSERT INTO attendees (event_date, time_slot, name, amount) VALUES ($1, $2, $3, $4)',
-      [date, slot, String(name).trim(), Number(amount)]
-    );
+    const { error: insertError } = await supabase
+      .from('attendees')
+      .insert({ event_date: date, time_slot: slot, name: String(name).trim(), amount: Number(amount) });
+
+    if (insertError) throw insertError;
 
     return res.status(201).json({
       success: true,
@@ -162,18 +153,21 @@ app.get('/attendance/:date', async (req, res) => {
   }
 
   try {
-    const { rows } = await pool.query(
-      `SELECT name, time_slot, amount,
-              TO_CHAR(registered_at AT TIME ZONE 'Asia/Seoul', 'YYYY-MM-DD HH24:MI:SS') AS registered_at
-       FROM attendees
-       WHERE event_date = $1
-       ORDER BY time_slot, registered_at`,
-      [date]
-    );
+    const { data: rows, error } = await supabase
+      .from('attendees')
+      .select('name, time_slot, amount, registered_at')
+      .eq('event_date', date)
+      .order('time_slot')
+      .order('registered_at');
+
+    if (error) throw error;
 
     const bungType = getBungType(date);
     const slot1030 = rows.filter((r) => r.time_slot === '10:30');
     const slot1200 = rows.filter((r) => r.time_slot === '12:00');
+
+    const toKST = (ts) =>
+      new Date(ts).toLocaleString('sv-SE', { timeZone: 'Asia/Seoul' }).replace('T', ' ');
 
     return res.json({
       date,
@@ -186,13 +180,13 @@ app.get('/attendance/:date', async (req, res) => {
           count: slot1030.length,
           capacity: SLOT_CAPACITY,
           remaining: Math.max(0, SLOT_CAPACITY - slot1030.length),
-          attendees: slot1030.map((r) => ({ name: r.name, registered_at: r.registered_at })),
+          attendees: slot1030.map((r) => ({ name: r.name, registered_at: toKST(r.registered_at) })),
         },
         '12:00': {
           count: slot1200.length,
           capacity: SLOT_CAPACITY,
           remaining: Math.max(0, SLOT_CAPACITY - slot1200.length),
-          attendees: slot1200.map((r) => ({ name: r.name, registered_at: r.registered_at })),
+          attendees: slot1200.map((r) => ({ name: r.name, registered_at: toKST(r.registered_at) })),
         },
       },
     });
@@ -213,19 +207,25 @@ app.get('/attendance', async (req, res) => {
   const offset = parseInt(req.query.offset || '0');
 
   try {
-    const { rows } = await pool.query(
-      `SELECT event_date, time_slot, name, amount,
-              TO_CHAR(registered_at AT TIME ZONE 'Asia/Seoul', 'YYYY-MM-DD HH24:MI:SS') AS registered_at
-       FROM attendees
-       ORDER BY event_date DESC, time_slot, registered_at
-       LIMIT $1 OFFSET $2`,
-      [limit, offset]
-    );
+    const { data: rows, error, count } = await supabase
+      .from('attendees')
+      .select('event_date, time_slot, name, amount, registered_at', { count: 'exact' })
+      .order('event_date', { ascending: false })
+      .order('time_slot')
+      .order('registered_at')
+      .range(offset, offset + limit - 1);
 
-    const { rows: countRows } = await pool.query('SELECT COUNT(*) AS cnt FROM attendees');
-    const total = parseInt(countRows[0].cnt);
+    if (error) throw error;
 
-    return res.json({ total, limit, offset, attendees: rows });
+    const toKST = (ts) =>
+      new Date(ts).toLocaleString('sv-SE', { timeZone: 'Asia/Seoul' }).replace('T', ' ');
+
+    return res.json({
+      total: count,
+      limit,
+      offset,
+      attendees: rows.map((r) => ({ ...r, registered_at: toKST(r.registered_at) })),
+    });
   } catch (err) {
     console.error('GET /attendance 오류:', err.message);
     return res.status(500).json({ success: false, message: '서버 오류가 발생했습니다.' });
@@ -240,12 +240,15 @@ app.delete('/attendance/:date/:name', async (req, res) => {
   const { date, name } = req.params;
 
   try {
-    const { rowCount } = await pool.query(
-      'DELETE FROM attendees WHERE event_date = $1 AND name = $2',
-      [date, decodeURIComponent(name)]
-    );
+    const { error, count } = await supabase
+      .from('attendees')
+      .delete({ count: 'exact' })
+      .eq('event_date', date)
+      .eq('name', decodeURIComponent(name));
 
-    if (rowCount === 0) {
+    if (error) throw error;
+
+    if (count === 0) {
       return res.status(404).json({
         success: false,
         message: `${name}님의 ${date} 벙 등록 정보를 찾을 수 없습니다.`,
@@ -263,14 +266,7 @@ app.delete('/attendance/:date/:name', async (req, res) => {
 });
 
 // ─── 서버 시작 ─────────────────────────────────────────────
-initDB()
-  .then(() => {
-    app.listen(PORT, () => {
-      console.log(`Bung Tracker 서버 실행 중 → http://localhost:${PORT}`);
-      console.log(`슬롯 정원: ${SLOT_CAPACITY}명 / 타임`);
-    });
-  })
-  .catch((err) => {
-    console.error('DB 초기화 실패:', err.message);
-    process.exit(1);
-  });
+app.listen(PORT, () => {
+  console.log(`Bung Tracker 서버 실행 중 → http://localhost:${PORT}`);
+  console.log(`슬롯 정원: ${SLOT_CAPACITY}명 / 타임`);
+});
