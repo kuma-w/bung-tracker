@@ -82,6 +82,115 @@ router.post('/events', requireAdmin, async (req, res) => {
 });
 
 /**
+ * PATCH /events/:date
+ * 벙 수정 (amount_per_person, 슬롯 정원 변경 / 슬롯 추가 / 슬롯 삭제)
+ *
+ * Body: {
+ *   "amount_per_person": 2000,          // 선택
+ *   "slots": [                           // 선택 — 전달된 슬롯만 처리
+ *     { "slot_time": "10:30", "capacity": 12 },  // 기존 슬롯: 정원 변경
+ *     { "slot_time": "14:00", "capacity": 10 },  // 새 슬롯: 추가
+ *   ]
+ *   "delete_slots": ["12:00"]            // 선택 — 삭제할 슬롯 (참석자 없어야 함)
+ * }
+ */
+router.patch('/events/:date', requireAdmin, async (req, res) => {
+  const { date } = req.params;
+  const { amount_per_person, slots, delete_slots } = req.body;
+
+  if (!amount_per_person && !slots && !delete_slots) {
+    return res.status(400).json({
+      success: false,
+      message: 'amount_per_person, slots, delete_slots 중 하나 이상 필요합니다.',
+    });
+  }
+
+  try {
+    const { data: event, error: evErr } = await supabase
+      .from('events')
+      .select('id, event_slots(id, slot_time, capacity, attendees(id))')
+      .eq('event_date', date)
+      .single();
+
+    if (evErr && evErr.code === 'PGRST116') {
+      return res.status(404).json({ success: false, message: `${date} 벙을 찾을 수 없습니다.` });
+    }
+    if (evErr) throw evErr;
+
+    // 1. amount_per_person 변경
+    if (amount_per_person !== undefined) {
+      const { error } = await supabase
+        .from('events')
+        .update({ amount_per_person })
+        .eq('id', event.id);
+      if (error) throw error;
+    }
+
+    // 2. 슬롯 삭제
+    if (Array.isArray(delete_slots) && delete_slots.length > 0) {
+      for (const slot_time of delete_slots) {
+        const target = event.event_slots.find((s) => s.slot_time === slot_time);
+        if (!target) {
+          return res.status(404).json({ success: false, message: `${slot_time} 슬롯이 존재하지 않습니다.` });
+        }
+        if (target.attendees.length > 0) {
+          return res.status(409).json({
+            success: false,
+            message: `${slot_time} 슬롯에 참석자(${target.attendees.length}명)가 있어 삭제할 수 없습니다.`,
+          });
+        }
+        const { error } = await supabase.from('event_slots').delete().eq('id', target.id);
+        if (error) throw error;
+      }
+    }
+
+    // 3. 슬롯 추가 / 정원 변경
+    if (Array.isArray(slots) && slots.length > 0) {
+      for (const { slot_time, capacity } of slots) {
+        const existing = event.event_slots.find((s) => s.slot_time === slot_time);
+        if (existing) {
+          // 기존 슬롯 — 정원 변경
+          const { error } = await supabase
+            .from('event_slots')
+            .update({ capacity })
+            .eq('id', existing.id);
+          if (error) throw error;
+        } else {
+          // 새 슬롯 — 추가
+          const { error } = await supabase
+            .from('event_slots')
+            .insert({ event_id: event.id, slot_time, capacity: capacity ?? 10 });
+          if (error) throw error;
+        }
+      }
+    }
+
+    // 변경 후 최신 상태 조회
+    const { data: updated, error: fetchErr } = await supabase
+      .from('events')
+      .select('id, event_date, amount_per_person, event_slots(id, slot_time, capacity, attendees(id))')
+      .eq('id', event.id)
+      .single();
+    if (fetchErr) throw fetchErr;
+
+    console.log(`[PATCH /events/${date}] 수정 완료`);
+    return res.json({
+      success: true,
+      message: `${date} 벙이 수정되었습니다.`,
+      event: {
+        id: updated.id,
+        event_date: updated.event_date,
+        amount_per_person: updated.amount_per_person,
+        slots: formatSlots(updated.event_slots),
+      },
+    });
+  } catch (err) {
+    console.error('PATCH /events/:date 오류:', err.message);
+    return res.status(500).json({ success: false, message: '서버 오류가 발생했습니다.' });
+  }
+});
+
+/**
  * DELETE /events/:date
  * 벙 삭제 (슬롯·참석자 cascade 삭제)
  */

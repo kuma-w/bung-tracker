@@ -8,20 +8,29 @@ const router = Router();
 
 // ─── 헬퍼 ──────────────────────────────────────────────────
 
-/** dates별 이벤트를 조회해 총 예상 금액을 계산한다. 벙이 없으면 null을 반환한다. */
-async function calcExpectedAmount(names, dates) {
+/**
+ * dates별 이벤트를 조회해 총 예상 금액을 계산한다. 벙이 없으면 null을 반환한다.
+ * slotsPerPerson이 null이면 해당 날짜의 슬롯 수를 자동으로 사용한다.
+ */
+async function calcExpectedAmount(names, dates, slotsPerPerson = null, slotTime = null) {
   let total = 0;
   for (const date of dates) {
     const { data: event, error } = await supabase
       .from('events')
-      .select('amount_per_person')
+      .select('amount_per_person, event_slots(id)')
       .eq('event_date', date)
       .single();
 
     if (error && error.code === 'PGRST116') return { total: null, missingDate: date };
     if (error) throw error;
 
-    total += event.amount_per_person * names.length;
+    const effectiveSlots = slotsPerPerson !== null
+      ? slotsPerPerson
+      : slotTime
+        ? 1
+        : event.event_slots.length;
+
+    total += event.amount_per_person * names.length * effectiveSlots;
   }
   return { total, missingDate: null };
 }
@@ -55,7 +64,7 @@ router.post('/payment', async (req, res) => {
   }
 
   const rawContent = String(content);
-  const { names, dates } = parseContent(rawContent);
+  const { names, dates, slotsPerPerson, slotTime } = parseContent(rawContent);
 
   // 파싱 실패 — failed로 저장 후 반환
   if (names.length === 0 || dates.length === 0) {
@@ -93,7 +102,7 @@ router.post('/payment', async (req, res) => {
 
   try {
     // 금액 검증
-    const { total: expected, missingDate } = await calcExpectedAmount(names, dates);
+    const { total: expected, missingDate } = await calcExpectedAmount(names, dates, slotsPerPerson, slotTime);
     if (missingDate) {
       const failReason = `${missingDate}에 개설된 벙이 없습니다.`;
       await updatePayment(paymentId, { status: 'failed', fail_reason: failReason });
@@ -101,13 +110,13 @@ router.post('/payment', async (req, res) => {
     }
 
     if (Number(amount) !== expected) {
-      const failReason = `금액 불일치 — 예상: ${expected}원 (${names.length}명 × ${dates.length}개 날짜), 수신: ${amount}원`;
+      const failReason = `금액 불일치 — 예상: ${expected}원, 수신: ${amount}원`;
       await updatePayment(paymentId, { status: 'failed', fail_reason: failReason });
       return res.status(400).json({ success: false, payment_id: paymentId, message: failReason });
     }
 
     // 슬롯 배정
-    const results = await assignToSlots(names, dates, paymentId);
+    const results = await assignToSlots(names, dates, paymentId, slotsPerPerson, slotTime);
     const status = derivePaymentStatus(results);
     await updatePayment(paymentId, { status });
 
@@ -173,11 +182,12 @@ router.get('/payments', requireAdmin, async (req, res) => {
  */
 router.post('/payments/:id/assign', requireAdmin, async (req, res) => {
   const paymentId = Number(req.params.id);
-  const { names, dates } = req.body;
+  const { names, dates, slots_per_person = null, slot_time = null } = req.body;
 
   if (!Array.isArray(names) || names.length === 0 || !Array.isArray(dates) || dates.length === 0) {
     return res.status(400).json({ success: false, message: 'names, dates 배열이 필요합니다.' });
   }
+  const slotsPerPerson = slots_per_person !== null ? Number(slots_per_person) : null;
 
   try {
     const { data: payment, error: payErr } = await supabase
@@ -196,7 +206,7 @@ router.post('/payments/:id/assign', requireAdmin, async (req, res) => {
     }
 
     // 금액 검증
-    const { total: expected, missingDate } = await calcExpectedAmount(names, dates);
+    const { total: expected, missingDate } = await calcExpectedAmount(names, dates, slotsPerPerson, slot_time);
     if (missingDate) {
       return res.status(400).json({ success: false, message: `${missingDate}에 개설된 벙이 없습니다.` });
     }
@@ -207,7 +217,7 @@ router.post('/payments/:id/assign', requireAdmin, async (req, res) => {
       });
     }
 
-    const results = await assignToSlots(names, dates, paymentId);
+    const results = await assignToSlots(names, dates, paymentId, slotsPerPerson, slot_time);
     const status = derivePaymentStatus(results);
     await updatePayment(paymentId, {
       status,

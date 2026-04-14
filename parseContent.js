@@ -3,8 +3,23 @@ function parseContent(content) {
   const tokens = content.trim().split(/\s+/);
   const dates = [];
   const names = [];
+  let slotsPerPerson = null; // null = 해당 날짜 슬롯 수 자동 적용
+  let slotTime = null;
 
   for (const token of tokens) {
+    // N타임 패턴 (예: 2타임, 1타임)
+    const slotMatch = token.match(/^(\d+)타임$/);
+    if (slotMatch) {
+      slotsPerPerson = parseInt(slotMatch[1], 10);
+      continue;
+    }
+
+    // HH:MM 슬롯 지정 (예: 10:30, 12:00)
+    if (/^\d{1,2}:\d{2}$/.test(token)) {
+      slotTime = token;
+      continue;
+    }
+
     let date = null;
 
     // YYYY-MM-DD
@@ -29,7 +44,7 @@ function parseContent(content) {
     }
   }
 
-  return { names, dates };
+  return { names, dates, slotsPerPerson, slotTime };
 }
 
 module.exports = { parseContent };
