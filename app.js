@@ -9,6 +9,15 @@ app.use(cors({
   origin: process.env.CORS_ORIGIN || '*',
 }));
 app.use(express.json());
+
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const ms = Date.now() - start;
+    console.log(`${req.method} ${req.originalUrl} ${res.statusCode} ${ms}ms`);
+  });
+  next();
+});
 app.use(eventsRouter);
 app.use(paymentsRouter);
 
