@@ -11,22 +11,13 @@ beforeEach(() => jest.clearAllMocks());
 
 // ─── 공통 mock 헬퍼 ─────────────────────────────────────────
 
-/** payments insert → { id } 반환 mock */
-function mockSavePayment(id = 1) {
-  return {
-    data: { id },
-    error: null,
-  };
-}
-
 /**
  * POST /payment 성공 시나리오 전체 mock 설정
  * events → amount_per_person, event_slots 수 조회
- * event_slots → 슬롯 배정용
  * attendees → 기존 참석자 조회 + 삽입
  * payments → 저장·업데이트
  */
-function setupPostPaymentMock({ amountPerPerson = 1500, slots = 2, existingAttendees = [] } = {}) {
+function setupPostPaymentMock({ amountPerPerson = 1500, slots = 1, existingAttendees = [] } = {}) {
   const eventSlots = Array.from({ length: slots }, (_, i) => ({
     id: i + 1,
     slot_time: i === 0 ? '10:30' : '12:00',
@@ -53,16 +44,6 @@ function setupPostPaymentMock({ amountPerPerson = 1500, slots = 2, existingAtten
         }),
       };
     }
-    if (table === 'event_slots') {
-      return {
-        select: jest.fn().mockReturnThis(),
-        eq: jest.fn().mockReturnThis(),
-        single: jest.fn().mockResolvedValue({
-          data: { id: 1, event_slots: eventSlots },
-          error: null,
-        }),
-      };
-    }
     if (table === 'attendees') {
       return {
         select: jest.fn().mockReturnValue({
@@ -78,45 +59,37 @@ function setupPostPaymentMock({ amountPerPerson = 1500, slots = 2, existingAtten
 // ─── POST /payment ───────────────────────────────────────────
 
 describe('POST /payment', () => {
-  test('201 — 1타임 이벤트, 시간 미지정 → 자동 배정', async () => {
+  test('201 — 1슬롯 이벤트, 슬롯 미지정 → 전체 배정', async () => {
     setupPostPaymentMock({ amountPerPerson: 1500, slots: 1 });
     const res = await request(app)
       .post('/payment')
-      .send({ content: '홍길동 0417', amount: 1500 });
+      .send({ content: '홍길동17', amount: 1500 });
     expect(res.status).toBe(201);
     expect(res.body.success).toBe(true);
   });
 
-  test('201 — 2타임 이벤트, 시간 미지정 → 전체 슬롯 배정', async () => {
+  test('201 — 2슬롯 이벤트, 슬롯 미지정 → 전체 슬롯 배정', async () => {
     setupPostPaymentMock({ amountPerPerson: 1500, slots: 2 });
     const res = await request(app)
       .post('/payment')
-      .send({ content: '홍길동 0417', amount: 3000 }); // 1500 × 2타임
+      .send({ content: '홍길동17', amount: 3000 }); // 1500 × 2슬롯
     expect(res.status).toBe(201);
     expect(res.body.success).toBe(true);
   });
 
-  test('201 — 2타임 명시', async () => {
+  test('201 — 슬롯 1 지정', async () => {
     setupPostPaymentMock({ amountPerPerson: 1500, slots: 2 });
     const res = await request(app)
       .post('/payment')
-      .send({ content: '홍길동 2타임 0417', amount: 3000 });
+      .send({ content: '홍길동17 1', amount: 1500 });
     expect(res.status).toBe(201);
   });
 
-  test('201 — 슬롯 지정 (12:00)', async () => {
+  test('201 — 슬롯 2 지정', async () => {
     setupPostPaymentMock({ amountPerPerson: 1500, slots: 2 });
     const res = await request(app)
       .post('/payment')
-      .send({ content: '홍길동 12:00 0417', amount: 1500 });
-    expect(res.status).toBe(201);
-  });
-
-  test('201 — 이름 여러 명', async () => {
-    setupPostPaymentMock({ amountPerPerson: 1500, slots: 1 });
-    const res = await request(app)
-      .post('/payment')
-      .send({ content: '홍길동 김철수 0417', amount: 3000 });
+      .send({ content: '홍길동17 2', amount: 1500 });
     expect(res.status).toBe(201);
   });
 
@@ -150,7 +123,21 @@ describe('POST /payment', () => {
 
     const res = await request(app)
       .post('/payment')
-      .send({ content: '0417', amount: 1500 });
+      .send({ content: '17', amount: 1500 });
+    expect(res.status).toBe(422);
+  });
+
+  test('422 — 다중 이름 구 형식 → 파싱 실패', async () => {
+    supabase.from.mockReturnValue({
+      insert: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      single: jest.fn().mockResolvedValue({ data: { id: 1 }, error: null }),
+    });
+
+    // 구 형식 "홍길동 김철수 0417" — 새 파서에서는 첫 토큰에 숫자가 없어 파싱 실패
+    const res = await request(app)
+      .post('/payment')
+      .send({ content: '홍길동 김철수 0417', amount: 3000 });
     expect(res.status).toBe(422);
   });
 
@@ -158,7 +145,7 @@ describe('POST /payment', () => {
     setupPostPaymentMock({ amountPerPerson: 1500, slots: 1 });
     const res = await request(app)
       .post('/payment')
-      .send({ content: '홍길동 0417', amount: 9999 });
+      .send({ content: '홍길동17', amount: 9999 });
     expect(res.status).toBe(400);
     expect(res.body.success).toBe(false);
   });
@@ -183,7 +170,7 @@ describe('POST /payment', () => {
 
     const res = await request(app)
       .post('/payment')
-      .send({ content: '홍길동 0101', amount: 1500 });
+      .send({ content: '홍길동1', amount: 1500 }); // 이번 달 1일, 벙 없음
     expect(res.status).toBe(400);
   });
 });
@@ -198,7 +185,7 @@ describe('GET /payments', () => {
       range: jest.fn().mockReturnThis(),
       eq: jest.fn().mockReturnThis(),
       then: (resolve) => resolve({
-        data: [{ id: 1, raw_content: '홍길동 0417', amount: 1500, status: 'assigned', created_at: '2026-04-14T01:00:00Z' }],
+        data: [{ id: 1, raw_content: '홍길동17', amount: 1500, status: 'assigned', created_at: '2026-04-14T01:00:00Z' }],
         error: null,
         count: 1,
       }),
