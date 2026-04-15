@@ -143,7 +143,7 @@ router.post('/payment', async (req, res) => {
  * Query: ?status=failed&limit=50&offset=0
  */
 router.get('/payments', requireAdmin, async (req, res) => {
-  const { status, name, from, to, limit = '50', offset = '0' } = req.query;
+  const { status, limit = '50', offset = '0' } = req.query;
 
   try {
     let query = supabase
@@ -153,9 +153,6 @@ router.get('/payments', requireAdmin, async (req, res) => {
       .range(Number(offset), Number(offset) + Number(limit) - 1);
 
     if (status) query = query.eq('status', status);
-    if (name)   query = query.contains('parsed_names', [name]);
-    if (from)   query = query.gte('created_at', `${from}T00:00:00`);
-    if (to)     query = query.lte('created_at', `${to}T23:59:59`);
 
     const { data: payments, error, count } = await query;
     if (error) throw error;
