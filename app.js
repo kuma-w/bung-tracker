@@ -12,9 +12,12 @@ app.use(express.json());
 
 app.use((req, res, next) => {
   const start = Date.now();
+  if (req.method === 'POST' || req.method === 'PATCH') {
+    console.log(`→ ${req.method} ${req.originalUrl} body:`, JSON.stringify(req.body));
+  }
   res.on('finish', () => {
     const ms = Date.now() - start;
-    console.log(`${req.method} ${req.originalUrl} ${res.statusCode} ${ms}ms`);
+    console.log(`← ${req.method} ${req.originalUrl} ${res.statusCode} ${ms}ms`);
   });
   next();
 });
