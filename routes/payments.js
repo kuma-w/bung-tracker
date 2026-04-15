@@ -202,18 +202,6 @@ router.post('/payments/:id/assign', requireAdmin, async (req, res) => {
       return res.status(409).json({ success: false, message: '이미 완전히 배정된 입금입니다.' });
     }
 
-    // 금액 검증
-    const { total: expected, missingDate } = await calcExpectedAmount(names, dates, slotIndex, slot_time);
-    if (missingDate) {
-      return res.status(400).json({ success: false, message: `${missingDate}에 개설된 벙이 없습니다.` });
-    }
-    if (payment.amount !== expected) {
-      return res.status(400).json({
-        success: false,
-        message: `금액 불일치 — 예상: ${expected}원, 입금액: ${payment.amount}원`,
-      });
-    }
-
     const results = await assignToSlots(names, dates, paymentId, slotIndex, slot_time);
     const status = derivePaymentStatus(results);
     await updatePayment(paymentId, {
