@@ -8,7 +8,10 @@ const app = express();
 app.use(cors({
   origin: process.env.CORS_ORIGIN || '*',
 }));
-app.use(express.json());
+app.use((req, res, next) => {
+  if (req.method === 'POST' && req.path === '/payment') return next();
+  express.json()(req, res, next);
+});
 
 app.use((req, res, next) => {
   const start = Date.now();
