@@ -1,4 +1,5 @@
-const { Router } = require('express');
+const express = require('express');
+const { Router } = express;
 const supabase = require('../lib/supabase');
 const { requireAdmin } = require('../lib/middleware');
 const { parseContent } = require('../parseContent');
@@ -52,7 +53,14 @@ async function updatePayment(id, fields) {
  *
  * Body: { "content": "홍길동 김철수 0416", "amount": 3000 }
  */
-router.post('/payment', async (req, res) => {
+router.post('/payment', express.text({ type: 'application/json' }), (req, res, next) => {
+  try {
+    req.body = JSON.parse(req.body.replace(/[\r\n]+/g, '\\n'));
+  } catch {
+    return res.status(400).json({ success: false, message: '잘못된 JSON 형식입니다.' });
+  }
+  next();
+}, async (req, res) => {
   const { content, amount } = req.body;
   console.log(`[POST /payment] 수신: content="${content}" amount=${amount}`);
 
