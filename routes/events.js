@@ -327,7 +327,14 @@ router.post('/events/:date/attendees', requireAdmin, async (req, res) => {
     const results = [];
 
     for (const name of names) {
-      const existing = attendeeRows.find((r) => r.name === name);
+      // slot_time 지정 시: 해당 슬롯에만 중복 체크 (다른 슬롯에 있어도 신규 등록 허용)
+      // slot_time 미지정 시: 어느 슬롯이든 이미 등록됐으면 중복
+      const targetSlotId = slot_time
+        ? event.event_slots.find((s) => s.slot_time === slot_time)?.id
+        : null;
+      const existing = slot_time
+        ? attendeeRows.find((r) => r.name === name && r.event_slot_id === targetSlotId)
+        : attendeeRows.find((r) => r.name === name);
       if (existing) {
         const slot = event.event_slots.find((s) => s.id === existing.event_slot_id);
         results.push({ name, status: 'duplicate', slot_time: slot?.slot_time });
