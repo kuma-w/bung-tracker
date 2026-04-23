@@ -54,6 +54,7 @@ async function updatePayment(id, fields) {
  * Body: { "content": "홍길동 김철수 0416", "amount": 3000 }
  */
 router.post('/payment', express.text({ type: 'application/json' }), (req, res, next) => {
+  console.log(`[POST /payment] raw body: ${JSON.stringify(req.body)}`);
   try {
     req.body = JSON.parse(req.body.replace(/[\r\n]+/g, '\\n'));
   } catch {
