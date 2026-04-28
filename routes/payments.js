@@ -62,14 +62,30 @@ router.post('/payment', express.text({ type: 'application/json' }), (req, res, n
   }
   next();
 }, async (req, res) => {
-  const { content, amount } = req.body;
-  console.log(`[POST /payment] 수신: content="${content}" amount=${amount}`);
+  const { content, amount: amountRaw } = req.body;
+  console.log(`[POST /payment] 수신: content="${content}" amount=${amountRaw}`);
 
-  if (!content || amount === undefined) {
+  if (!content || amountRaw === undefined) {
     return res.status(400).json({ success: false, message: 'content, amount 필드가 모두 필요합니다.' });
   }
 
-  const rawContent = String(content);
+  // "테스트 →  모임통장 (1248)" → "테스트"
+  const name = String(content).split('→')[0].trim();
+
+  // "1,000원 입금" → 1000
+  const amount = parseInt(String(amountRaw).replace(/[^0-9]/g, ''), 10);
+
+  if (!name || isNaN(amount)) {
+    return res.status(400).json({ success: false, message: 'content 또는 amount 형식이 올바르지 않습니다.' });
+  }
+
+  // 날짜는 오늘로 자동 설정
+  const today = new Date();
+  const day = String(today.getDate()).padStart(2, '0');
+  const rawContent = `${name}${day}`;
+
+  console.log(`[POST /payment] 파싱 전: name="${name}" amount=${amount} rawContent="${rawContent}"`);
+
   const { names, dates, slotIndex } = parseContent(rawContent);
 
   // 파싱 실패 — failed로 저장 후 반환
