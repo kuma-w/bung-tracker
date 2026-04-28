@@ -50,7 +50,12 @@ function parseContent(content) {
 
   if (!name || !/\D/.test(name) || day < 1 || day > 31) return { names: [], dates: [], slotIndex: null };
 
-  const fullDate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  // 지정 일자가 오늘보다 과거면 다음 달로 처리
+  const effectiveMonth = day < now.getDate() ? month + 1 : month;
+  const effectiveYear = effectiveMonth > 12 ? year + 1 : year;
+  const finalMonth = effectiveMonth > 12 ? 1 : effectiveMonth;
+
+  const fullDate = `${effectiveYear}-${String(finalMonth).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
   return { names: [name], dates: [fullDate], slotIndex };
 }
 
