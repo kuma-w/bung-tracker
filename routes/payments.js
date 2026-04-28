@@ -56,9 +56,13 @@ async function updatePayment(id, fields) {
 router.post('/payment', express.text({ type: 'application/json' }), (req, res, next) => {
   console.log(`[POST /payment] raw body: ${JSON.stringify(req.body)}`);
   try {
-    req.body = JSON.parse(req.body.replace(/[\r\n]+/g, '\\n'));
+    req.body = JSON.parse(req.body);
   } catch {
-    return res.status(400).json({ success: false, message: '잘못된 JSON 형식입니다.' });
+    try {
+      req.body = JSON.parse(req.body.replace(/[\r\n]+/g, '\\n'));
+    } catch {
+      return res.status(400).json({ success: false, message: '잘못된 JSON 형식입니다.' });
+    }
   }
   next();
 }, async (req, res) => {
