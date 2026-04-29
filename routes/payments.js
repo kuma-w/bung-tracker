@@ -73,6 +73,12 @@ router.post('/payment', express.text({ type: 'application/json' }), (req, res, n
     return res.status(400).json({ success: false, message: 'content, amount 필드가 모두 필요합니다.' });
   }
 
+  // 출금 알림 무시
+  if (!String(amountRaw).includes('입금')) {
+    console.log(`[POST /payment] 출금 알림 무시: amount="${amountRaw}"`);
+    return res.status(200).json({ success: false, message: '입금 알림이 아니므로 무시합니다.' });
+  }
+
   // "최웅철 30 →  모임통장 (1248)" → "최웅철 30"
   const beforeArrow = String(content).split('→')[0].trim();
 
