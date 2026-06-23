@@ -40,7 +40,7 @@ function formatSlots(eventSlots, includeAttendees = false) {
  * }
  */
 router.post('/events', requireAdmin, async (req, res) => {
-  const { event_date, amount_per_person, slots } = req.body;
+  const { event_date, amount_per_person, slots, venue } = req.body;
 
   if (!event_date || !amount_per_person || !Array.isArray(slots) || slots.length === 0) {
     return res.status(400).json({
@@ -55,7 +55,7 @@ router.post('/events', requireAdmin, async (req, res) => {
   try {
     const { data: event, error: eventError } = await supabase
       .from('events')
-      .insert({ event_date, amount_per_person })
+      .insert({ event_date, amount_per_person, ...(venue !== undefined && { venue }) })
       .select()
       .single();
     if (eventError) throw eventError;
@@ -96,12 +96,12 @@ router.post('/events', requireAdmin, async (req, res) => {
  */
 router.patch('/events/:date', requireAdmin, async (req, res) => {
   const { date } = req.params;
-  const { amount_per_person, slots, delete_slots } = req.body;
+  const { amount_per_person, slots, delete_slots, venue } = req.body;
 
-  if (!amount_per_person && !slots && !delete_slots) {
+  if (amount_per_person === undefined && venue === undefined && !slots && !delete_slots) {
     return res.status(400).json({
       success: false,
-      message: 'amount_per_person, slots, delete_slots 중 하나 이상 필요합니다.',
+      message: 'amount_per_person, venue, slots, delete_slots 중 하나 이상 필요합니다.',
     });
   }
 
@@ -117,12 +117,12 @@ router.patch('/events/:date', requireAdmin, async (req, res) => {
     }
     if (evErr) throw evErr;
 
-    // 1. amount_per_person 변경
-    if (amount_per_person !== undefined) {
-      const { error } = await supabase
-        .from('events')
-        .update({ amount_per_person })
-        .eq('id', event.id);
+    // 1. events 필드 변경
+    const eventUpdates = {};
+    if (amount_per_person !== undefined) eventUpdates.amount_per_person = amount_per_person;
+    if (venue !== undefined) eventUpdates.venue = venue;
+    if (Object.keys(eventUpdates).length > 0) {
+      const { error } = await supabase.from('events').update(eventUpdates).eq('id', event.id);
       if (error) throw error;
     }
 
@@ -168,7 +168,7 @@ router.patch('/events/:date', requireAdmin, async (req, res) => {
     // 변경 후 최신 상태 조회
     const { data: updated, error: fetchErr } = await supabase
       .from('events')
-      .select('id, event_date, amount_per_person, event_slots(id, slot_time, capacity, attendees(id))')
+      .select('id, event_date, amount_per_person, venue, event_slots(id, slot_time, capacity, attendees(id))')
       .eq('id', event.id)
       .single();
     if (fetchErr) throw fetchErr;
@@ -181,6 +181,7 @@ router.patch('/events/:date', requireAdmin, async (req, res) => {
         id: updated.id,
         event_date: updated.event_date,
         amount_per_person: updated.amount_per_person,
+        venue: updated.venue,
         slots: formatSlots(updated.event_slots),
       },
     });
@@ -221,7 +222,7 @@ router.get('/events', async (req, res) => {
   try {
     const { data: events, error } = await supabase
       .from('events')
-      .select('id, event_date, amount_per_person, created_at, event_slots(id, slot_time, capacity, attendees(id))')
+      .select('id, event_date, amount_per_person, venue, created_at, event_slots(id, slot_time, capacity, attendees(id))')
       .order('event_date', { ascending: false });
     if (error) throw error;
 
@@ -231,6 +232,7 @@ router.get('/events', async (req, res) => {
         id: e.id,
         event_date: e.event_date,
         amount_per_person: e.amount_per_person,
+        venue: e.venue,
         created_at: toKST(e.created_at),
         slots: formatSlots(e.event_slots),
       })),
@@ -252,7 +254,7 @@ router.get('/events/:date', async (req, res) => {
   try {
     const { data: event, error } = await supabase
       .from('events')
-      .select('id, event_date, amount_per_person, created_at, event_slots(id, slot_time, capacity, attendees(name, registered_at))')
+      .select('id, event_date, amount_per_person, venue, created_at, event_slots(id, slot_time, capacity, attendees(name, registered_at))')
       .eq('event_date', date)
       .single();
 
@@ -265,6 +267,7 @@ router.get('/events/:date', async (req, res) => {
     return res.json({
       event_date: event.event_date,
       amount_per_person: event.amount_per_person,
+      venue: event.venue,
       total_attendees: slots.reduce((sum, s) => sum + s.count, 0),
       slots,
     });

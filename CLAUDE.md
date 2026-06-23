@@ -30,6 +30,7 @@ x-admin-key: <ADMIN_KEY>
 | id                | integer     | PK                           |
 | event_date        | date        | 벙 날짜 (YYYY-MM-DD, unique) |
 | amount_per_person | integer     | 1인당 참가비 (원)            |
+| venue             | integer     | 장소 인덱스 (nullable, F/E에서 enum 매핑) |
 | created_at        | timestamptz | 생성 시각                    |
 
 ### event_slots (타임슬롯)
